@@ -60,6 +60,7 @@ OBJS += libpcsxcore/new_dynarec/new_dynarec.o libpcsxcore/new_dynarec/linkage_ar
 OBJS += libpcsxcore/new_dynarec/pcsxmem.o
 else
 libpcsxcore/new_dynarec/emu_if.o: CFLAGS += -DDRC_DISABLE
+frontend/libretro.o: CFLAGS += -DDRC_DISABLE
 endif
 OBJS += libpcsxcore/new_dynarec/emu_if.o
 libpcsxcore/new_dynarec/new_dynarec.o: libpcsxcore/new_dynarec/assem_arm.c \
@@ -81,6 +82,11 @@ plugins/dfsound/spu.o: plugins/dfsound/adsr.c plugins/dfsound/reverb.c \
 	plugins/dfsound/xa.c
 ifeq "$(ARCH)" "arm"
 OBJS += plugins/dfsound/arm_utils.o
+endif
+ifeq "$(HAVE_C64_TOOLS)" "1"
+plugins/dfsound/spu.o: CFLAGS += -DC64X_DSP
+plugins/dfsound/spu.o: plugins/dfsound/spu_c64x.c
+frontend/menu.o: CFLAGS += -DC64X_DSP
 endif
 ifneq ($(findstring oss,$(SOUND_DRIVERS)),)
 plugins/dfsound/out.o: CFLAGS += -DHAVE_OSS
@@ -164,6 +170,7 @@ OBJS += frontend/libpicofe/linux/fbdev.o frontend/libpicofe/linux/xenv.o
 OBJS += frontend/libpicofe/linux/in_evdev.o
 OBJS += frontend/plat_pandora.o frontend/plat_omap.o
 frontend/main.o frontend/menu.o: CFLAGS += -include frontend/pandora/ui_feat.h
+frontend/libpicofe/linux/plat.o: CFLAGS += -DPANDORA
 USE_PLUGIN_LIB = 1
 USE_FRONTEND = 1
 endif
@@ -188,6 +195,10 @@ endif
 ifeq "$(PLATFORM)" "libretro"
 OBJS += frontend/libretro.o
 CFLAGS += -DFRONTEND_SUPPORTS_RGB565
+
+ifeq ($(MMAP_WIN32),1)
+OBJS += libpcsxcore/memmap_win32.o
+endif
 endif
 
 ifeq "$(USE_PLUGIN_LIB)" "1"
@@ -282,7 +293,7 @@ endif
 ifeq "$(PLATFORM)" "pandora"
 PND_MAKE ?= $(HOME)/dev/pnd/src/pandora-libraries/testdata/scripts/pnd_make.sh
 
-rel: pcsx $(PLUGINS) \
+rel: pcsx plugins/dfsound/pcsxr_spu_area3.out $(PLUGINS) \
 		frontend/pandora/pcsx.sh frontend/pandora/pcsx.pxml.templ frontend/pandora/pcsx.png \
 		frontend/pandora/picorestore frontend/pandora/skin readme.txt COPYING
 	rm -rf out

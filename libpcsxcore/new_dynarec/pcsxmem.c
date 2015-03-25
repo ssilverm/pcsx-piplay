@@ -30,7 +30,12 @@ static u32 mem_ffwtab[(1+2+4) * 0x1000 / 4];
 //static u32 mem_unmrtab[(1+2+4) * 0x1000 / 4];
 static u32 mem_unmwtab[(1+2+4) * 0x1000 / 4];
 
+// When this is called in a loop, and 'h' is a function pointer, clang will crash.
+#ifdef __clang__
+static __attribute__ ((noinline)) void map_item(u32 *out, const void *h, u32 flag)
+#else
 static void map_item(u32 *out, const void *h, u32 flag)
+#endif
 {
 	u32 hv = (u32)h;
 	if (hv & 1) {
@@ -205,7 +210,7 @@ make_dma_func(6)
 static void io_spu_write16(u32 value)
 {
 	// meh
-	SPU_writeRegister(address, value);
+	SPU_writeRegister(address, value, psxRegs.cycle);
 }
 
 static void io_spu_write32(u32 value)
@@ -213,8 +218,8 @@ static void io_spu_write32(u32 value)
 	SPUwriteRegister wfunc = SPU_writeRegister;
 	u32 a = address;
 
-	wfunc(a, value & 0xffff);
-	wfunc(a + 2, value >> 16);
+	wfunc(a, value & 0xffff, psxRegs.cycle);
+	wfunc(a + 2, value >> 16, psxRegs.cycle);
 }
 
 static u32 io_gpu_read_status(void)
@@ -287,7 +292,7 @@ void new_dyna_pcsx_mem_load_state(void)
 	map_rcnt_rcount2(rcnts[2].mode);
 }
 
-int pcsxmem_is_handler_dynamic(u_int addr)
+int pcsxmem_is_handler_dynamic(unsigned int addr)
 {
 	if ((addr & 0xfffff000) != 0x1f801000)
 		return 0;

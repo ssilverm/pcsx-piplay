@@ -1285,7 +1285,7 @@ void emit_andimm(int rs,int imm,int rt)
     assem_debug("bic %s,%s,#%d\n",regname[rt],regname[rs],imm);
     output_w32(0xe3c00000|rd_rn_rm(rt,rs,0)|armval);
   }else if(imm==65535) {
-    #ifndef HAVE_ARMV7
+    #ifndef HAVE_ARMV6
     assem_debug("bic %s,%s,#FF000000\n",regname[rt],regname[rs]);
     output_w32(0xe3c00000|rd_rn_rm(rt,rs,0)|0x4FF);
     assem_debug("bic %s,%s,#00FF0000\n",regname[rt],regname[rt]);
@@ -1418,7 +1418,7 @@ void emit_shrdimm(int rs,int rs2,u_int imm,int rt)
 
 void emit_signextend16(int rs,int rt)
 {
-  #ifndef HAVE_ARMV7
+  #ifndef HAVE_ARMV6
   emit_shlimm(rs,16,rt);
   emit_sarimm(rt,16,rt);
   #else
@@ -1429,7 +1429,7 @@ void emit_signextend16(int rs,int rt)
 
 void emit_signextend8(int rs,int rt)
 {
-  #ifndef HAVE_ARMV7
+  #ifndef HAVE_ARMV6
   emit_shlimm(rs,24,rt);
   emit_sarimm(rt,24,rt);
   #else
@@ -3999,10 +3999,16 @@ static int emit_fastpath_cmp_jump(int i,int addr,int *addr_reg_override)
     type=0;
   }
   else if(type==MTYPE_1F80) { // scratchpad
-    emit_addimm(addr,-0x1f800000,HOST_TEMPREG);
-    emit_cmpimm(HOST_TEMPREG,0x1000);
-    jaddr=(int)out;
-    emit_jc(0);
+    if (psxH == (void *)0x1f800000) {
+      emit_addimm(addr,-0x1f800000,HOST_TEMPREG);
+      emit_cmpimm(HOST_TEMPREG,0x1000);
+      jaddr=(int)out;
+      emit_jc(0);
+    }
+    else {
+      // do usual RAM check, jump will go to the right handler
+      type=0;
+    }
   }
 #endif
 

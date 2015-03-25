@@ -126,7 +126,7 @@ unsigned char Test23[] = { 0x43, 0x58, 0x44, 0x32, 0x39 ,0x34, 0x30, 0x51 };
 #define STATUS_ERROR     (1<<0) // 0x01
 
 /* Errors */
-#define ERROR_NOT_READY  (1<<7) // 0x80
+#define ERROR_NOTREADY   (1<<7) // 0x80
 #define ERROR_INVALIDCMD (1<<6) // 0x40
 #define ERROR_INVALIDARG (1<<5) // 0x20
 
@@ -984,7 +984,7 @@ void cdrInterrupt() {
 		case DRIVESTATE_PREPARE_CD:
 			SetResultSize(2);
 			cdr.Result[0] = cdr.StatP | STATUS_ERROR;
-			cdr.Result[1] = ERROR_NOT_READY;
+			cdr.Result[1] = ERROR_NOTREADY;
 			cdr.Stat = DiskError;
 			break;
 		}
@@ -1413,13 +1413,15 @@ void psxDma3(u32 madr, u32 bcr, u32 chcr) {
 			psxCpu->Clear(madr, cdsize / 4);
 			pTransfer += cdsize;
 
-
-			// burst vs normal
 			if( chcr == 0x11400100 ) {
+				HW_DMA3_MADR = SWAPu32(madr + cdsize);
 				CDRDMA_INT( (cdsize/4) / 4 );
 			}
 			else if( chcr == 0x11000000 ) {
-				CDRDMA_INT( (cdsize/4) * 1 );
+				// CDRDMA_INT( (cdsize/4) * 1 );
+				// halted
+				psxRegs.cycle += (cdsize/4) * 24/2;
+				CDRDMA_INT(16);
 			}
 			return;
 
@@ -1513,6 +1515,12 @@ int cdrFreeze(void *f, int Mode) {
 			if (cdr.Reg2 == 0) {
 				SysPrintf("cdrom: fixing up old savestate\n");
 				cdr.Reg2 = 7;
+			}
+			// also did not save Attenuator..
+			if ((cdr.AttenuatorLeftToLeft | cdr.AttenuatorLeftToRight
+			     | cdr.AttenuatorRightToLeft | cdr.AttenuatorRightToRight) == 0)
+			{
+				cdr.AttenuatorLeftToLeft = cdr.AttenuatorRightToRight = 0x80;
 			}
 		}
 	}

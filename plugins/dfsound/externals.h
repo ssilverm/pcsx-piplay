@@ -28,6 +28,11 @@
 #define noinline
 #define unlikely(x) x
 #endif
+#if defined(__GNUC__) && !defined(_TMS320C6X)
+#define preload __builtin_prefetch
+#else
+#define preload(...)
+#endif
 
 #define PSE_LT_SPU                  4
 #define PSE_SPU_ERR_SUCCESS         0
@@ -46,19 +51,24 @@
 // num of channels
 #define MAXCHAN     24
 
-// ~ FRAG_MSECS ms of data
 // note: must be even due to the way reverb works now
-#define FRAG_MSECS 2
-#define NSSIZE ((44100 * FRAG_MSECS / 1000 + 1) & ~1)
+#define NSSIZE ((44100 / 50 + 16) & ~1)
 
 ///////////////////////////////////////////////////////////
 // struct defines
 ///////////////////////////////////////////////////////////
 
+enum ADSR_State {
+ ADSR_ATTACK = 0,
+ ADSR_DECAY = 1,
+ ADSR_SUSTAIN = 2,
+ ADSR_RELEASE = 3,
+};
+
 // ADSR INFOS PER CHANNEL
 typedef struct
 {
- unsigned char  State:2;
+ unsigned char  State:2;                               // ADSR_State
  unsigned char  AttackModeExp:1;
  unsigned char  SustainModeExp:1;
  unsigned char  SustainIncrease:1;
@@ -90,11 +100,11 @@ typedef struct
  int               iSBPos;                             // mixing stuff
  int               spos;
  int               sinc;
+ int               sinc_inv;
 
  unsigned char *   pCurr;                              // current pos in sound mem
  unsigned char *   pLoop;                              // loop ptr in sound mem
 
- unsigned int      bStop:1;                            // is channel stopped (sample _can_ still be playing, ADSR Release phase)
  unsigned int      bReverb:1;                          // can we do reverb on this channel? must have ctrl register bit, to get active
  unsigned int      bRVBActive:1;                       // reverb active flag
  unsigned int      bNoise:1;                           // noise active flag
@@ -105,8 +115,6 @@ typedef struct
  int               iRightVolume;                       // right volume
  ADSRInfoEx        ADSRX;
  int               iRawPitch;                          // raw pitch (0...3fff)
-
- int               SB[32+4];
 } SPUCHAN;
 
 ///////////////////////////////////////////////////////////
@@ -118,8 +126,6 @@ typedef struct
 
  int VolLeft;
  int VolRight;
- int iRVBLeft;
- int iRVBRight;
 
  int FB_SRC_A;       // (offset)
  int FB_SRC_B;       // (offset)
@@ -156,15 +162,75 @@ typedef struct
 
  int dirty;          // registers changed
 
- // normalized offsets
- int nIIR_DEST_A0, nIIR_DEST_A1, nIIR_DEST_B0, nIIR_DEST_B1,
- 	nACC_SRC_A0, nACC_SRC_A1, nACC_SRC_B0, nACC_SRC_B1, 
-	nIIR_SRC_A0, nIIR_SRC_A1, nIIR_SRC_B0, nIIR_SRC_B1,
-	nACC_SRC_C0, nACC_SRC_C1, nACC_SRC_D0, nACC_SRC_D1,
-	nMIX_DEST_A0, nMIX_DEST_A1, nMIX_DEST_B0, nMIX_DEST_B1;
  // MIX_DEST_xx - FB_SRC_x
- int nFB_SRC_A0, nFB_SRC_A1, nFB_SRC_B0, nFB_SRC_B1;
+ int FB_SRC_A0, FB_SRC_A1, FB_SRC_B0, FB_SRC_B1;
 } REVERBInfo;
+
+///////////////////////////////////////////////////////////
+
+// psx buffers / addresses
+
+#define SB_SIZE (32 + 4)
+
+typedef struct
+{
+ unsigned short  spuCtrl;
+ unsigned short  spuStat;
+
+ unsigned int    spuAddr;
+ union {
+  unsigned char  *spuMemC;
+  unsigned short *spuMem;
+ };
+ unsigned char * pSpuIrq;
+
+ unsigned int    cycles_played;
+ int             decode_pos;
+ int             decode_dirty_ch;
+ unsigned int    bSpuInit:1;
+ unsigned int    bSPUIsOpen:1;
+ unsigned int    bMemDirty:1;          // had external write to SPU RAM
+
+ unsigned int    dwNoiseVal;           // global noise generator
+ unsigned int    dwNoiseCount;
+ unsigned int    dwNewChannel;         // flags for faster testing, if new channel starts
+ unsigned int    dwChannelOn;          // not silent channels
+ unsigned int    dwChannelDead;        // silent+not useful channels
+
+ unsigned char * pSpuBuffer;
+ short         * pS;
+
+ void (CALLBACK *irqCallback)(void);   // func of main emu, called on spu irq
+ void (CALLBACK *cddavCallback)(unsigned short,unsigned short);
+ void (CALLBACK *scheduleCallback)(unsigned int);
+
+ xa_decode_t   * xapGlobal;
+ unsigned int  * XAFeed;
+ unsigned int  * XAPlay;
+ unsigned int  * XAStart;
+ unsigned int  * XAEnd;
+
+ unsigned int  * CDDAFeed;
+ unsigned int  * CDDAPlay;
+ unsigned int  * CDDAStart;
+ unsigned int  * CDDAEnd;
+
+ unsigned int    XARepeat;
+ unsigned int    XALastVal;
+
+ int             iLeftXAVol;
+ int             iRightXAVol;
+
+ SPUCHAN       * s_chan;
+ REVERBInfo    * rvb;
+
+ // buffers
+ int           * SB;
+ int           * SSumLR;
+
+ int             pad[29];
+ unsigned short  regArea[0x400];
+} SPUInfo;
 
 ///////////////////////////////////////////////////////////
 // SPU.C globals
@@ -172,81 +238,19 @@ typedef struct
 
 #ifndef _IN_SPU
 
-// psx buffers / addresses
+extern SPUInfo spu;
 
-extern unsigned short  regArea[];                        
-extern unsigned short  spuMem[];
-extern unsigned char * spuMemC;
-extern unsigned char * pSpuIrq;
-extern unsigned char * pSpuBuffer;
+void do_samples(unsigned int cycles_to, int do_sync);
+void schedule_next_irq(void);
 
 #define regAreaGet(ch,offset) \
-  regArea[((ch<<4)|(offset))>>1]
+  spu.regArea[((ch<<4)|(offset))>>1]
 
-// user settings
-
-extern int        iVolume;
-extern int        iXAPitch;
-extern int        iUseReverb;
-extern int        iUseInterpolation;
-// MISC
-
-extern int had_dma;
-extern int decode_pos;
-
-extern SPUCHAN s_chan[];
-extern REVERBInfo rvb;
-
-extern unsigned short spuCtrl;
-extern unsigned short spuStat;
-extern unsigned short spuIrq;
-extern unsigned int   spuAddr;
-extern int      bSpuInit;
-extern unsigned int dwNewChannel;
-extern unsigned int dwChannelOn;
-extern unsigned int dwPendingChanOff;
-extern unsigned int dwChannelDead;
-
-extern int      SSumR[];
-extern int      SSumL[];
-extern int      iCycle;
-extern short *  pS;
-
-extern void (CALLBACK *cddavCallback)(unsigned short,unsigned short);
+#define do_samples_if_needed(c, sync) \
+ do { \
+  if (sync || (int)((c) - spu.cycles_played) >= 16 * 768) \
+   do_samples(c, sync); \
+ } while (0)
 
 #endif
 
-///////////////////////////////////////////////////////////
-// XA.C globals
-///////////////////////////////////////////////////////////
-
-#ifndef _IN_XA
-
-extern xa_decode_t   * xapGlobal;
-
-extern uint32_t * XAFeed;
-extern uint32_t * XAPlay;
-extern uint32_t * XAStart;
-extern uint32_t * XAEnd;
-
-extern uint32_t * CDDAFeed;
-extern uint32_t * CDDAPlay;
-extern uint32_t * CDDAStart;
-extern uint32_t * CDDAEnd;
-
-extern int           iLeftXAVol;
-extern int           iRightXAVol;
-
-#endif
-
-///////////////////////////////////////////////////////////
-// REVERB.C globals
-///////////////////////////////////////////////////////////
-
-#ifndef _IN_REVERB
-
-extern int *          sRVBPlay;
-extern int *          sRVBEnd;
-extern int *          sRVBStart;
-
-#endif

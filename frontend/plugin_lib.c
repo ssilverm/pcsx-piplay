@@ -34,6 +34,8 @@
 #include "../libpcsxcore/psxmem_map.h"
 #include "../plugins/dfinput/externals.h"
 
+#define HUD_HEIGHT 10
+
 int in_type1, in_type2;
 int in_a1[2] = { 127, 127 }, in_a2[2] = { 127, 127 };
 int in_adev[2] = { -1, -1 }, in_adev_axis[2][2] = {{ 0, 1 }, { 0, 1 }};
@@ -44,7 +46,7 @@ void *tsdev;
 void *pl_vout_buf;
 int g_layer_x, g_layer_y, g_layer_w, g_layer_h;
 static int pl_vout_w, pl_vout_h, pl_vout_bpp; /* output display/layer */
-static int pl_vout_scale, pl_vout_yoffset;
+static int pl_vout_scale_w, pl_vout_scale_h, pl_vout_yoffset;
 static int psx_w, psx_h, psx_bpp;
 static int vsync_cnt;
 static int is_pal, frame_interval, frame_interval1024;
@@ -101,20 +103,20 @@ static void hud_printf(void *fb, int w, int x, int y, const char *texto, ...)
 
 static void print_msg(int h, int border)
 {
-	hud_print(pl_vout_buf, pl_vout_w, border + 2, h - 10, hud_msg);
+	hud_print(pl_vout_buf, pl_vout_w, border + 2, h - HUD_HEIGHT, hud_msg);
 }
 
 static void print_fps(int h, int border)
 {
-	hud_printf(pl_vout_buf, pl_vout_w, border + 2, h - 10,
+	hud_printf(pl_vout_buf, pl_vout_w, border + 2, h - HUD_HEIGHT,
 		"%2d %4.1f", pl_rearmed_cbs.flips_per_sec,
 		pl_rearmed_cbs.vsps_cur);
 }
 
 static void print_cpu_usage(int w, int h, int border)
 {
-	hud_printf(pl_vout_buf, pl_vout_w, pl_vout_w - border - 28, h - 10,
-		"%3d", pl_rearmed_cbs.cpu_usage);
+	hud_printf(pl_vout_buf, pl_vout_w, pl_vout_w - border - 28,
+		h - HUD_HEIGHT, "%3d", pl_rearmed_cbs.cpu_usage);
 }
 
 // draw 192x8 status of 24 sound channels
@@ -126,7 +128,7 @@ static __attribute__((noinline)) void draw_active_chans(int vout_w, int vout_h)
 
 	static const unsigned short colors[2] = { 0x1fe3, 0x0700 };
 	unsigned short *dest = (unsigned short *)pl_vout_buf +
-		vout_w * (vout_h - 10) + vout_w / 2 - 192/2;
+		vout_w * (vout_h - HUD_HEIGHT) + vout_w / 2 - 192/2;
 	unsigned short *d, p;
 	int c, x, y;
 
@@ -180,6 +182,14 @@ static void update_layer_size(int w, int h)
 		g_layer_w = w; g_layer_h = h;
 		break;
 
+	case SCALE_2_2:
+		g_layer_w = w; g_layer_h = h;
+		if (w * 2 <= g_menuscreen_w)
+			g_layer_w = w * 2;
+		if (h * 2 <= g_menuscreen_h)
+			g_layer_h = h * 2;
+		break;
+
 	case SCALE_4_3v2:
 		if (h > g_menuscreen_h || (240 < h && h <= 360))
 			goto fractional_4_3;
@@ -222,7 +232,7 @@ static void update_layer_size(int w, int h)
 }
 
 // XXX: this is platform specific really
-static int resolution_ok(int w, int h)
+static inline int resolution_ok(int w, int h)
 {
 	return w <= 1024 && h <= 512;
 }
@@ -253,20 +263,25 @@ static void pl_vout_set_mode(int w, int h, int raw_w, int raw_h, int bpp)
 		vout_h = 192;
 	}
 
-	pl_vout_scale = 1;
+	pl_vout_scale_w = pl_vout_scale_h = 1;
 #ifdef __ARM_NEON__
 	if (soft_filter) {
 		if (resolution_ok(w * 2, h * 2) && bpp == 16) {
-			vout_w *= 2;
-			vout_h *= 2;
-			pl_vout_scale = 2;
+			pl_vout_scale_w = 2;
+			pl_vout_scale_h = 2;
 		}
 		else {
 			// filter unavailable
 			hud_msg[0] = 0;
 		}
 	}
+	else if (scanlines != 0 && scanline_level != 100 && bpp == 16) {
+		if (h <= 256)
+			pl_vout_scale_h = 2;
+	}
 #endif
+	vout_w *= pl_vout_scale_w;
+	vout_h *= pl_vout_scale_h;
 
 	update_layer_size(vout_w, vout_h);
 
@@ -308,7 +323,7 @@ static void pl_vout_flip(const void *vram, int stride, int bgr24, int w, int h)
 	}
 
 	// borders
-	doffs = (dstride - w * pl_vout_scale) / 2 & ~1;
+	doffs = (dstride - w * pl_vout_scale_w) / 2 & ~1;
 
 	if (doffs > doffs_old)
 		clear_counter = 2;
@@ -353,15 +368,30 @@ static void pl_vout_flip(const void *vram, int stride, int bgr24, int w, int h)
 		}
 	}
 #ifdef __ARM_NEON__
-	else if (soft_filter == SOFT_FILTER_SCALE2X && pl_vout_scale == 2)
+	else if (soft_filter == SOFT_FILTER_SCALE2X && pl_vout_scale_w == 2)
 	{
 		neon_scale2x_16_16(src, (void *)dest, w,
 			stride * 2, dstride * 2, h);
 	}
-	else if (soft_filter == SOFT_FILTER_EAGLE2X && pl_vout_scale == 2)
+	else if (soft_filter == SOFT_FILTER_EAGLE2X && pl_vout_scale_w == 2)
 	{
 		neon_eagle2x_16_16(src, (void *)dest, w,
 			stride * 2, dstride * 2, h);
+	}
+	else if (scanlines != 0 && scanline_level != 100)
+	{
+		int l = scanline_level * 2048 / 100;
+		int stride_0 = pl_vout_scale_h >= 2 ? 0 : stride;
+
+		h1 *= pl_vout_scale_h;
+		for (; h1 >= 2; h1 -= 2)
+		{
+			bgr555_to_rgb565(dest, src, w * 2);
+			dest += dstride * 2, src += stride_0;
+
+			bgr555_to_rgb565_b(dest, src, w * 2, l);
+			dest += dstride * 2, src += stride;
+		}
 	}
 #endif
 	else
@@ -373,7 +403,7 @@ static void pl_vout_flip(const void *vram, int stride, int bgr24, int w, int h)
 	}
 
 out_hud:
-	print_hud(w * pl_vout_scale, h * pl_vout_scale, 0);
+	print_hud(w * pl_vout_scale_w, h * pl_vout_scale_h, 0);
 
 out:
 	pcnt_end(PCNT_BLIT);
@@ -436,7 +466,8 @@ static int dispmode_default(void)
 	return 1;
 }
 
-int dispmode_doubleres(void)
+#ifdef __ARM_NEON__
+static int dispmode_doubleres(void)
 {
 	if (!(pl_rearmed_cbs.gpu_caps & GPU_CAP_SUPPORTS_2X)
 	    || !resolution_ok(psx_w * 2, psx_h * 2) || psx_bpp != 16)
@@ -448,7 +479,7 @@ int dispmode_doubleres(void)
 	return 1;
 }
 
-int dispmode_scale2x(void)
+static int dispmode_scale2x(void)
 {
 	if (!resolution_ok(psx_w * 2, psx_h * 2) || psx_bpp != 16)
 		return 0;
@@ -459,7 +490,7 @@ int dispmode_scale2x(void)
 	return 1;
 }
 
-int dispmode_eagle2x(void)
+static int dispmode_eagle2x(void)
 {
 	if (!resolution_ok(psx_w * 2, psx_h * 2) || psx_bpp != 16)
 		return 0;
@@ -469,6 +500,7 @@ int dispmode_eagle2x(void)
 	snprintf(hud_msg, sizeof(hud_msg), "eagle2x");
 	return 1;
 }
+#endif
 
 static int (*dispmode_switchers[])(void) = {
 	dispmode_default,

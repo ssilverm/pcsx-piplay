@@ -15,30 +15,38 @@
 #include "../libpcsxcore/system.h"
 #include "../plugins/cdrcimg/cdrcimg.h"
 
+#ifndef _WIN32
+#define CALLBACK
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 static int dummy_func() {
 	return 0;
 }
 
 /* SPU */
-extern long SPUopen(void);
-extern long SPUinit(void);
-extern long SPUshutdown(void);
-extern long SPUclose(void);
-extern void SPUplaySample(unsigned char);
-extern void SPUwriteRegister(unsigned long, unsigned short);
-extern unsigned short SPUreadRegister(unsigned long);
-extern void SPUwriteDMA(unsigned short);
-extern unsigned short SPUreadDMA(void);
-extern void SPUwriteDMAMem(unsigned short *, int);
-extern void SPUreadDMAMem(unsigned short *, int);
-extern void SPUplayADPCMchannel(void *);
-extern void SPUregisterCallback(void (*callback)(void));
-extern long SPUconfigure(void);
-extern long SPUtest(void);
-extern void SPUabout(void);
-extern long SPUfreeze(unsigned int, void *);
-extern void SPUasync(unsigned int);
-extern int  SPUplayCDDAchannel(short *, int);
+extern long CALLBACK SPUopen(void);
+extern long CALLBACK SPUinit(void);
+extern long CALLBACK SPUshutdown(void);
+extern long CALLBACK SPUclose(void);
+extern void CALLBACK SPUplaySample(unsigned char);
+extern void CALLBACK SPUwriteRegister(unsigned long, unsigned short, unsigned int);
+extern unsigned short CALLBACK SPUreadRegister(unsigned long);
+extern void CALLBACK SPUwriteDMA(unsigned short);
+extern unsigned short CALLBACK SPUreadDMA(void);
+extern void CALLBACK SPUwriteDMAMem(unsigned short *, int, unsigned int);
+extern void CALLBACK SPUreadDMAMem(unsigned short *, int, unsigned int);
+extern void CALLBACK SPUplayADPCMchannel(void *);
+extern void CALLBACK SPUregisterCallback(void (*cb)(void));
+extern void CALLBACK SPUregisterScheduleCb(void (*cb)(unsigned int));
+extern long CALLBACK SPUconfigure(void);
+extern long CALLBACK SPUtest(void);
+extern void CALLBACK SPUabout(void);
+extern long CALLBACK SPUfreeze(unsigned int, void *, unsigned int);
+extern void CALLBACK SPUasync(unsigned int, unsigned int);
+extern int  CALLBACK SPUplayCDDAchannel(short *, int);
 
 /* PAD */
 static long PADreadPort1(PadDataS *pad)
@@ -135,6 +143,7 @@ static const struct {
 	DIRECT_SPU(SPUplayADPCMchannel),
 	DIRECT_SPU(SPUfreeze),
 	DIRECT_SPU(SPUregisterCallback),
+	DIRECT_SPU(SPUregisterScheduleCb),
 	DIRECT_SPU(SPUasync),
 	DIRECT_SPU(SPUplayCDDAchannel),
 	/* PAD */
@@ -254,14 +263,14 @@ pc_hook_func              (GPU_readDataMem, (uint32_t *a0, int a1), (a0, a1), PC
 pc_hook_func_ret(long,     GPU_dmaChain, (uint32_t *a0, int32_t a1), (a0, a1), PCNT_GPU)
 pc_hook_func              (GPU_updateLace, (void), (), PCNT_GPU)
 
-pc_hook_func              (SPU_writeRegister, (unsigned long a0, unsigned short a1), (a0, a1), PCNT_SPU)
+pc_hook_func              (SPU_writeRegister, (unsigned long a0, unsigned short a1, uint32_t a2), (a0, a1, a2), PCNT_SPU)
 pc_hook_func_ret(unsigned short,SPU_readRegister, (unsigned long a0), (a0), PCNT_SPU)
 pc_hook_func              (SPU_writeDMA, (unsigned short a0), (a0), PCNT_SPU)
 pc_hook_func_ret(unsigned short,SPU_readDMA, (void), (), PCNT_SPU)
-pc_hook_func              (SPU_writeDMAMem, (unsigned short *a0, int a1), (a0, a1), PCNT_SPU)
-pc_hook_func              (SPU_readDMAMem, (unsigned short *a0, int a1), (a0, a1), PCNT_SPU)
+pc_hook_func              (SPU_writeDMAMem, (unsigned short *a0, int a1, uint32_t a2), (a0, a1, a2), PCNT_SPU)
+pc_hook_func              (SPU_readDMAMem, (unsigned short *a0, int a1, uint32_t a2), (a0, a1, a2), PCNT_SPU)
 pc_hook_func              (SPU_playADPCMchannel, (void *a0), (a0), PCNT_SPU)
-pc_hook_func              (SPU_async, (unsigned int a0), (a0), PCNT_SPU)
+pc_hook_func              (SPU_async, (uint32_t a0, uint32_t a1), (a0, a1), PCNT_SPU)
 pc_hook_func_ret(int,      SPU_playCDDAchannel, (short *a0, int a1), (a0, a1), PCNT_SPU)
 
 #define hook_it(name) { \

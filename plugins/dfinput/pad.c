@@ -203,22 +203,44 @@ static void do_cmd2(unsigned char value)
 					break;
 			}
 			break;
-
-		case CMD_READ_DATA_AND_VIBRATE:
-			if (value == 1 && CurPad == 0 && in_enable_vibration)
-				plat_trigger_vibrate(0);
-			break;
 	}
 }
 
-static void do_cmd3(unsigned char value)
+static void do_vibration(unsigned char value)
 {
-	if (in_enable_vibration && CurCmd == CMD_READ_DATA_AND_VIBRATE && CurPad == 0) {
-		if (value >= 0xf0)
-			plat_trigger_vibrate(1);
-		else if (value > 0x40)
-			plat_trigger_vibrate(0);
-	}
+    int changed = 0;
+    int i;
+
+    switch (CurCmd) {
+        case CMD_READ_DATA_AND_VIBRATE:
+            for (i = 0; i < 2; i++) {
+                if (padstate[CurPad].pad.Vib[i] == CurByte
+                     && padstate[CurPad].pad.VibF[i] != value) {
+                    padstate[CurPad].pad.VibF[i] = value;
+                    changed = 1;
+                }
+            }
+
+            if (!in_enable_vibration || !changed)
+                break;
+
+            plat_trigger_vibrate(CurPad,
+                                 padstate[CurPad].pad.VibF[0],
+                                 padstate[CurPad].pad.VibF[1]);
+            break;
+        case CMD_VIBRATION_TOGGLE:
+            for (i = 0; i < 2; i++) {
+                if (padstate[CurPad].pad.Vib[i] == CurByte)
+                    buf[CurByte] = 0;
+            }
+            if (value < 2) {
+                padstate[CurPad].pad.Vib[value] = CurByte;
+                if((padstate[CurPad].PadID & 0x0f) < (CurByte - 1) / 2) {
+                    padstate[CurPad].PadID = (padstate[CurPad].PadID & 0xf0) + (CurByte - 1) / 2;
+                }
+            }
+            break;
+    }
 }
 
 #if 0
@@ -233,9 +255,7 @@ unsigned char PADpoll(unsigned char value) {
 #endif
 
 unsigned char PADpoll_pad(unsigned char value) {
-
-	switch (CurByte) {
-	case 0:
+	if (CurByte == 0) {
 		CurCmd = value;
 		CurByte++;
 
@@ -244,16 +264,16 @@ unsigned char PADpoll_pad(unsigned char value) {
 			CurCmd = CMD_READ_DATA_AND_VIBRATE;
 
 		return do_cmd();
-	case 2:
-		do_cmd2(value);
-		break;
-	case 3:
-		do_cmd3(value);
-		break;
 	}
 
 	if (CurByte >= CmdLen)
 		return 0xff;	// verified
+
+	if (CurByte == 2)
+		do_cmd2(value);
+
+	if (padstate[CurPad].pad.controllerType == PSE_PAD_TYPE_ANALOGPAD)
+		do_vibration(value);
 
 	return buf[CurByte++];
 }

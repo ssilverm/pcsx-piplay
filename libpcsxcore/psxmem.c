@@ -28,7 +28,8 @@
 #include "r3000a.h"
 #include "psxhw.h"
 #include "debug.h"
-#include <sys/mman.h>
+
+#include "memmap.h"
 
 #ifndef MAP_ANONYMOUS
 #define MAP_ANONYMOUS MAP_ANON
@@ -48,20 +49,21 @@ void *psxMap(unsigned long addr, size_t size, int is_fixed,
 
 retry:
 	if (psxMapHook != NULL) {
-		ret = psxMapHook(addr, size, is_fixed, tag);
-		goto out;
+		ret = psxMapHook(addr, size, 0, tag);
+		if (ret == NULL)
+			return NULL;
+	}
+	else {
+		/* avoid MAP_FIXED, it overrides existing mappings.. */
+		/* if (is_fixed)
+			flags |= MAP_FIXED; */
+
+		req = (void *)addr;
+		ret = mmap(req, size, PROT_READ | PROT_WRITE, flags, -1, 0);
+		if (ret == MAP_FAILED)
+			return NULL;
 	}
 
-	/* avoid MAP_FIXED, it overrides existing mappings.. */
-	/* if (is_fixed)
-		flags |= MAP_FIXED; */
-
-	req = (void *)addr;
-	ret = mmap(req, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-	if (ret == MAP_FAILED)
-		return NULL;
-
-out:
 	if (addr != 0 && ret != (void *)addr) {
 		SysMessage("psxMap: warning: wanted to map @%08x, got %p\n",
 			addr, ret);
@@ -71,8 +73,7 @@ out:
 			return NULL;
 		}
 
-		if (ret != NULL && ((addr ^ (long)ret) & 0x00ffffff)
-		    && !tried_to_align)
+		if (((addr ^ (long)ret) & 0x00ffffff) && !tried_to_align)
 		{
 			psxUnmap(ret, size, tag);
 
@@ -95,7 +96,8 @@ void psxUnmap(void *ptr, size_t size, enum psxMapTag tag)
 		return;
 	}
 
-	munmap(ptr, size);
+	if (ptr)
+		munmap(ptr, size);
 }
 
 s8 *psxM = NULL; // Kernel & User Memory (2 Meg)
@@ -149,12 +151,13 @@ int psxMemInit() {
 	}
 
 	psxP = &psxM[0x200000];
-	psxH = psxMap(0x1f800000, 0x10000, 1, MAP_TAG_OTHER);
+	psxH = psxMap(0x1f800000, 0x10000, 0, MAP_TAG_OTHER);
 	psxR = psxMap(0x1fc00000, 0x80000, 0, MAP_TAG_OTHER);
 
 	if (psxMemRLUT == NULL || psxMemWLUT == NULL || 
-		psxR == NULL || psxP == NULL || psxH != (void *)0x1f800000) {
+	    psxR == NULL || psxP == NULL || psxH == NULL) {
 		SysMessage(_("Error allocating memory!"));
+		psxMemShutdown();
 		return -1;
 	}
 
@@ -208,12 +211,12 @@ void psxMemReset() {
 }
 
 void psxMemShutdown() {
-	psxUnmap(psxM, 0x00210000, MAP_TAG_RAM);
-	psxUnmap(psxH, 0x10000, MAP_TAG_OTHER);
-	psxUnmap(psxR, 0x80000, MAP_TAG_OTHER);
+	psxUnmap(psxM, 0x00210000, MAP_TAG_RAM); psxM = NULL;
+	psxUnmap(psxH, 0x10000, MAP_TAG_OTHER); psxH = NULL;
+	psxUnmap(psxR, 0x80000, MAP_TAG_OTHER); psxR = NULL;
 
-	free(psxMemRLUT);
-	free(psxMemWLUT);
+	free(psxMemRLUT); psxMemRLUT = NULL;
+	free(psxMemWLUT); psxMemWLUT = NULL;
 }
 
 static int writeok = 1;

@@ -13,8 +13,15 @@
 #include "gpu.h"
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#ifdef __GNUC__
 #define unlikely(x) __builtin_expect((x), 0)
+#define preload __builtin_prefetch
 #define noinline __attribute__((noinline))
+#else
+#define unlikely(x)
+#define preload(...)
+#define noinline
+#endif
 
 #define gpu_log(fmt, ...) \
   printf("%d:%03d: " fmt, *gpu.state.frame_count, *gpu.state.hcnt, ##__VA_ARGS__)
@@ -513,40 +520,29 @@ void GPUwriteData(uint32_t data)
 
 long GPUdmaChain(uint32_t *rambase, uint32_t start_addr)
 {
-  uint32_t addr, *list;
-  uint32_t *llist_entry = NULL;
+  uint32_t addr, *list, ld_addr = 0;
   int len, left, count;
   long cpu_cycles = 0;
+
+  preload(rambase + (start_addr & 0x1fffff) / 4);
 
   if (unlikely(gpu.cmd_len > 0))
     flush_cmd_buffer();
 
-  // ff7 sends it's main list twice, detect this
-  if (*gpu.state.frame_count == gpu.state.last_list.frame &&
-      *gpu.state.hcnt - gpu.state.last_list.hcnt <= 1 &&
-       gpu.state.last_list.cycles > 2048)
-  {
-    llist_entry = rambase + (gpu.state.last_list.addr & 0x1fffff) / 4;
-    *llist_entry |= 0x800000;
-  }
-
   log_io("gpu_dma_chain\n");
   addr = start_addr & 0xffffff;
-  for (count = 0; addr != 0xffffff; count++)
+  for (count = 0; (addr & 0x800000) == 0; count++)
   {
     list = rambase + (addr & 0x1fffff) / 4;
     len = list[0] >> 24;
     addr = list[0] & 0xffffff;
+    preload(rambase + (addr & 0x1fffff) / 4);
+
     cpu_cycles += 10;
     if (len > 0)
       cpu_cycles += 5 + len;
 
     log_io(".chain %08x #%d\n", (list - rambase) * 4, len);
-
-    // loop detection marker
-    // (bit23 set causes DMA error on real machine, so
-    //  unlikely to be ever set by the game)
-    list[0] |= 0x800000;
 
     if (len) {
       left = do_cmd_buffer(list + 1, len);
@@ -554,19 +550,30 @@ long GPUdmaChain(uint32_t *rambase, uint32_t start_addr)
         log_anomaly("GPUdmaChain: discarded %d/%d words\n", left, len);
     }
 
-    if (addr & 0x800000)
-      break;
+    #define LD_THRESHOLD (8*1024)
+    if (count >= LD_THRESHOLD) {
+      if (count == LD_THRESHOLD) {
+        ld_addr = addr;
+        continue;
+      }
+
+      // loop detection marker
+      // (bit23 set causes DMA error on real machine, so
+      //  unlikely to be ever set by the game)
+      list[0] |= 0x800000;
+    }
   }
 
-  // remove loop detection markers
-  addr = start_addr & 0x1fffff;
-  while (count-- > 0) {
-    list = rambase + addr / 4;
-    addr = list[0] & 0x1fffff;
-    list[0] &= ~0x800000;
+  if (ld_addr != 0) {
+    // remove loop detection markers
+    count -= LD_THRESHOLD + 2;
+    addr = ld_addr & 0x1fffff;
+    while (count-- > 0) {
+      list = rambase + addr / 4;
+      addr = list[0] & 0x1fffff;
+      list[0] &= ~0x800000;
+    }
   }
-  if (llist_entry)
-    *llist_entry &= ~0x800000;
 
   gpu.state.last_list.frame = *gpu.state.frame_count;
   gpu.state.last_list.hcnt = *gpu.state.hcnt;

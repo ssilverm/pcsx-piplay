@@ -26,14 +26,17 @@
 #include "ppf.h"
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <process.h>
 #include <windows.h>
 #define strcasecmp _stricmp
+#define usleep(x) Sleep((x) / 1000)
 #else
 #include <pthread.h>
 #include <sys/time.h>
 #include <unistd.h>
 #endif
+#include <errno.h>
 #include <zlib.h>
 
 unsigned int cdrIsoMultidiskCount;
@@ -329,8 +332,8 @@ static int parsetoc(const char *isofile) {
 		}
 		// check if it's really a TOC named as a .cue
 		fgets(linebuf, sizeof(linebuf), fi);
-		token = strtok(tmp, " ");
-		if (strncmp(token, "CD", 2) != 0 && strcmp(token, "CATALOG") != 0) {
+		token = strtok(linebuf, " ");
+		if (token && strncmp(token, "CD", 2) != 0 && strcmp(token, "CATALOG") != 0) {
 			fclose(fi);
 			return -1;
 		}
@@ -551,9 +554,9 @@ static int parsecue(const char *isofile) {
 			pregapOffset = -1; // mark to fill track start_offset
 		}
 		else if (!strcmp(token, "FILE")) {
-			t = sscanf(linebuf, " FILE \"%256[^\"]\"", tmpb);
+			t = sscanf(linebuf, " FILE \"%255[^\"]\"", tmpb);
 			if (t != 1)
-				sscanf(linebuf, " FILE %256s", tmpb);
+				sscanf(linebuf, " FILE %255s", tmpb);
 
 			// absolute path?
 			ti[numtracks + 1].handle = fopen(tmpb, "rb");
@@ -794,6 +797,8 @@ static int handlepbp(const char *isofile) {
 	if (ext == NULL || (strcmp(ext, ".pbp") != 0 && strcmp(ext, ".PBP") != 0))
 		return -1;
 
+	fseek(cdHandle, 0, SEEK_SET);
+
 	numtracks = 0;
 
 	ret = fread(&pbp_hdr, 1, sizeof(pbp_hdr), cdHandle);
@@ -956,6 +961,8 @@ static int handlecbin(const char *isofile) {
 		ext = isofile + strlen(isofile) - 5;
 	if (ext == NULL || (strcasecmp(ext + 1, ".cbn") != 0 && strcasecmp(ext, ".cbin") != 0))
 		return -1;
+
+	fseek(cdHandle, 0, SEEK_SET);
 
 	ret = fread(&ciso_hdr, 1, sizeof(ciso_hdr), cdHandle);
 	if (ret != sizeof(ciso_hdr)) {
@@ -1213,6 +1220,8 @@ static void PrintTracks(void) {
 // file for playback
 static long CALLBACK ISOopen(void) {
 	boolean isMode1ISO = FALSE;
+	char alt_bin_filename[MAXPATHLEN];
+	const char *bin_filename;
 
 	if (cdHandle != NULL) {
 		return 0; // it's already open
@@ -1220,6 +1229,8 @@ static long CALLBACK ISOopen(void) {
 
 	cdHandle = fopen(GetIsoFile(), "rb");
 	if (cdHandle == NULL) {
+		SysPrintf(_("Could't open '%s' for reading: %s\n"),
+			GetIsoFile(), strerror(errno));
 		return -1;
 	}
 
@@ -1268,26 +1279,29 @@ static long CALLBACK ISOopen(void) {
 	fseek(cdHandle, 0, SEEK_END);
 
 	// maybe user selected metadata file instead of main .bin ..
+	bin_filename = GetIsoFile();
 	if (ftell(cdHandle) < 2352 * 0x10) {
 		static const char *exts[] = { ".bin", ".BIN", ".img", ".IMG" };
-		char tmp[MAXPATHLEN], *p;
-		FILE *tmpf;
+		FILE *tmpf = NULL;
 		size_t i;
+		char *p;
 
-		strncpy(tmp, GetIsoFile(), sizeof(tmp));
-		tmp[MAXPATHLEN - 1] = '\0';
-		if (strlen(tmp) >= 4) {
-			p = tmp + strlen(tmp) - 4;
+		strncpy(alt_bin_filename, bin_filename, sizeof(alt_bin_filename));
+		alt_bin_filename[MAXPATHLEN - 1] = '\0';
+		if (strlen(alt_bin_filename) >= 4) {
+			p = alt_bin_filename + strlen(alt_bin_filename) - 4;
 			for (i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
 				strcpy(p, exts[i]);
-				tmpf = fopen(tmp, "rb");
-				if (tmpf != NULL) {
-					fclose(cdHandle);
-					cdHandle = tmpf;
-					fseek(cdHandle, 0, SEEK_END);
+				tmpf = fopen(alt_bin_filename, "rb");
+				if (tmpf != NULL)
 					break;
-				}
 			}
+		}
+		if (tmpf != NULL) {
+			bin_filename = alt_bin_filename;
+			fclose(cdHandle);
+			cdHandle = tmpf;
+			fseek(cdHandle, 0, SEEK_END);
 		}
 	}
 
@@ -1314,7 +1328,7 @@ static long CALLBACK ISOopen(void) {
 
 	// make sure we have another handle open for cdda
 	if (numtracks > 1 && ti[1].handle == NULL) {
-		ti[1].handle = fopen(GetIsoFile(), "rb");
+		ti[1].handle = fopen(bin_filename, "rb");
 	}
 	cdda_cur_sector = 0;
 	cdda_file_offset = 0;

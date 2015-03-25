@@ -109,6 +109,7 @@ void mmssdd( char *b, char *p )
 
 int GetCdromFile(u8 *mdir, u8 *time, char *filename) {
 	struct iso_directory_record *dir;
+	int retval = -1;
 	u8 ddir[4096];
 	u8 *buf;
 	int i;
@@ -122,7 +123,7 @@ int GetCdromFile(u8 *mdir, u8 *time, char *filename) {
 		if (dir->length[0] == 0) {
 			return -1;
 		}
-		i += dir->length[0];
+		i += (u8)dir->length[0];
 
 		if (dir->flags[0] & 0x2) { // it's a dir
 			if (!strnicmp((char *)&dir->name[0], filename, dir->name_len[0])) {
@@ -138,11 +139,12 @@ int GetCdromFile(u8 *mdir, u8 *time, char *filename) {
 		} else {
 			if (!strnicmp((char *)&dir->name[0], filename, strlen(filename))) {
 				mmssdd(dir->extent, (char *)time);
+				retval = 0;
 				break;
 			}
 		}
 	}
-	return 0;
+	return retval;
 }
 
 static const unsigned int gpu_ctl_def[] = {
@@ -206,9 +208,9 @@ int LoadCdrom() {
 		// read the SYSTEM.CNF
 		READTRACK();
 
-		sscanf((char *)buf + 12, "BOOT = cdrom:\\%256s", exename);
+		sscanf((char *)buf + 12, "BOOT = cdrom:\\%255s", exename);
 		if (GetCdromFile(mdir, time, exename) == -1) {
-			sscanf((char *)buf + 12, "BOOT = cdrom:%256s", exename);
+			sscanf((char *)buf + 12, "BOOT = cdrom:%255s", exename);
 			if (GetCdromFile(mdir, time, exename) == -1) {
 				char *ptr = strstr((char *)buf + 12, "cdrom:");
 				if (ptr != NULL) {
@@ -266,7 +268,7 @@ int LoadCdromFile(const char *filename, EXE_HEADER *head) {
 	u32 size, addr;
 	void *mem;
 
-	sscanf(filename, "cdrom:\\%256s", exename);
+	sscanf(filename, "cdrom:\\%255s", exename);
 
 	time[0] = itob(0); time[1] = itob(2); time[2] = itob(0x10);
 
@@ -310,7 +312,7 @@ int CheckCdrom() {
 	char *buf;
 	unsigned char mdir[4096];
 	char exename[256];
-	int i, c;
+	int i, len, c;
 
 	FreePPFCache();
 
@@ -320,8 +322,9 @@ int CheckCdrom() {
 
 	READTRACK();
 
-	CdromLabel[0] = '\0';
-	CdromId[0] = '\0';
+	memset(CdromLabel, 0, sizeof(CdromLabel));
+	memset(CdromId, 0, sizeof(CdromId));
+	memset(exename, 0, sizeof(exename));
 
 	strncpy(CdromLabel, buf + 52, 32);
 
@@ -335,9 +338,9 @@ int CheckCdrom() {
 	if (GetCdromFile(mdir, time, "SYSTEM.CNF;1") != -1) {
 		READTRACK();
 
-		sscanf(buf + 12, "BOOT = cdrom:\\%256s", exename);
+		sscanf(buf + 12, "BOOT = cdrom:\\%255s", exename);
 		if (GetCdromFile(mdir, time, exename) == -1) {
-			sscanf(buf + 12, "BOOT = cdrom:%256s", exename);
+			sscanf(buf + 12, "BOOT = cdrom:%255s", exename);
 			if (GetCdromFile(mdir, time, exename) == -1) {
 				char *ptr = strstr(buf + 12, "cdrom:");			// possibly the executable is in some subdir
 				if (ptr != NULL) {
@@ -361,14 +364,13 @@ int CheckCdrom() {
 		return -1;		// SYSTEM.CNF and PSX.EXE not found
 
 	if (CdromId[0] == '\0') {
-		i = strlen(exename);
-		if (i >= 2) {
-			if (exename[i - 2] == ';') i-= 2;
-			c = 8; i--;
-			while (i >= 0 && c >= 0) {
-				if (isalnum(exename[i])) CdromId[c--] = exename[i];
-				i--;
-			}
+		len = strlen(exename);
+		c = 0;
+		for (i = 0; i < len; ++i) {
+			if (exename[i] == ';' || c >= sizeof(CdromId) - 1)
+				break;
+			if (isalnum(exename[i]))
+				CdromId[c++] = exename[i];
 		}
 	}
 
@@ -386,6 +388,7 @@ int CheckCdrom() {
 	}
 	SysPrintf(_("CD-ROM Label: %.32s\n"), CdromLabel);
 	SysPrintf(_("CD-ROM ID: %.9s\n"), CdromId);
+	SysPrintf(_("CD-ROM EXE Name: %.255s\n"), exename);
 
 	BuildPPFCache();
 
@@ -570,7 +573,7 @@ int SaveState(const char *file) {
 	f = SaveFuncs.open(file, "wb");
 	if (f == NULL) return -1;
 
-	new_dyna_save();
+	new_dyna_before_save();
 
 	SaveFuncs.write(f, (void *)PcsxHeader, 32);
 	SaveFuncs.write(f, (void *)&SaveVersion, sizeof(u32));
@@ -599,11 +602,11 @@ int SaveState(const char *file) {
 
 	// spu
 	spufP = (SPUFreeze_t *) malloc(16);
-	SPU_freeze(2, spufP);
+	SPU_freeze(2, spufP, psxRegs.cycle);
 	Size = spufP->Size; SaveFuncs.write(f, &Size, 4);
 	free(spufP);
 	spufP = (SPUFreeze_t *) malloc(Size);
-	SPU_freeze(1, spufP);
+	SPU_freeze(1, spufP, psxRegs.cycle);
 	SaveFuncs.write(f, spufP, Size);
 	free(spufP);
 
@@ -612,6 +615,7 @@ int SaveState(const char *file) {
 	psxHwFreeze(f, 1);
 	psxRcntFreeze(f, 1);
 	mdecFreeze(f, 1);
+	new_dyna_freeze(f, 1);
 
 	SaveFuncs.close(f);
 
@@ -668,7 +672,7 @@ int LoadState(const char *file) {
 	SaveFuncs.read(f, &Size, 4);
 	spufP = (SPUFreeze_t *)malloc(Size);
 	SaveFuncs.read(f, spufP, Size);
-	SPU_freeze(0, spufP);
+	SPU_freeze(0, spufP, psxRegs.cycle);
 	free(spufP);
 
 	sioFreeze(f, 0);
@@ -676,9 +680,9 @@ int LoadState(const char *file) {
 	psxHwFreeze(f, 0);
 	psxRcntFreeze(f, 0);
 	mdecFreeze(f, 0);
+	new_dyna_freeze(f, 0);
 
 	SaveFuncs.close(f);
-	new_dyna_restore();
 
 	return 0;
 }

@@ -26,24 +26,6 @@
 // XA GLOBALS
 ////////////////////////////////////////////////////////////////////////
 
-xa_decode_t   * xapGlobal=0;
-
-uint32_t * XAFeed  = NULL;
-uint32_t * XAPlay  = NULL;
-uint32_t * XAStart = NULL;
-uint32_t * XAEnd   = NULL;
-
-uint32_t   XARepeat  = 0;
-uint32_t   XALastVal = 0;
-
-uint32_t * CDDAFeed  = NULL;
-uint32_t * CDDAPlay  = NULL;
-uint32_t * CDDAStart = NULL;
-uint32_t * CDDAEnd   = NULL;
-
-int             iLeftXAVol  = 32767;
-int             iRightXAVol = 32767;
-
 static int gauss_ptr = 0;
 static int gauss_window[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
@@ -56,48 +38,48 @@ static int gauss_window[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 // MIX XA & CDDA
 ////////////////////////////////////////////////////////////////////////
 
-INLINE void MixXA(void)
+INLINE void MixXA(int *SSumLR, int ns_to, int decode_pos)
 {
+ int cursor = decode_pos;
  int ns;
  short l, r;
  uint32_t v;
- int cursor = decode_pos;
 
- if(XAPlay != XAFeed || XARepeat > 0)
+ if(spu.XAPlay != spu.XAFeed || spu.XARepeat > 0)
  {
-  if(XAPlay == XAFeed)
-   XARepeat--;
+  if(spu.XAPlay == spu.XAFeed)
+   spu.XARepeat--;
 
-  v = XALastVal;
-  for(ns=0;ns<NSSIZE*2;)
+  v = spu.XALastVal;
+  for(ns = 0; ns < ns_to*2; )
    {
-    if(XAPlay != XAFeed) v=*XAPlay++;
-    if(XAPlay == XAEnd) XAPlay=XAStart;
+    if(spu.XAPlay != spu.XAFeed) v=*spu.XAPlay++;
+    if(spu.XAPlay == spu.XAEnd) spu.XAPlay=spu.XAStart;
 
-    l = ((int)(short)v * iLeftXAVol) >> 15;
-    r = ((int)(short)(v >> 16) * iLeftXAVol) >> 15;
+    l = ((int)(short)v * spu.iLeftXAVol) >> 15;
+    r = ((int)(short)(v >> 16) * spu.iLeftXAVol) >> 15;
     SSumLR[ns++] += l;
     SSumLR[ns++] += r;
 
-    spuMem[cursor] = v;
-    spuMem[cursor + 0x400/2] = v >> 16;
+    spu.spuMem[cursor] = v;
+    spu.spuMem[cursor + 0x400/2] = v >> 16;
     cursor = (cursor + 1) & 0x1ff;
    }
-  XALastVal = v;
+  spu.XALastVal = v;
  }
 
- for(ns=0;ns<NSSIZE*2 && CDDAPlay!=CDDAFeed && (CDDAPlay!=CDDAEnd-1||CDDAFeed!=CDDAStart);)
+ for(ns = 0; ns < ns_to * 2 && spu.CDDAPlay!=spu.CDDAFeed && (spu.CDDAPlay!=spu.CDDAEnd-1||spu.CDDAFeed!=spu.CDDAStart);)
   {
-   v=*CDDAPlay++;
-   if(CDDAPlay==CDDAEnd) CDDAPlay=CDDAStart;
+   v=*spu.CDDAPlay++;
+   if(spu.CDDAPlay==spu.CDDAEnd) spu.CDDAPlay=spu.CDDAStart;
 
-   l = ((int)(short)v * iLeftXAVol) >> 15;
-   r = ((int)(short)(v >> 16) * iLeftXAVol) >> 15;
+   l = ((int)(short)v * spu.iLeftXAVol) >> 15;
+   r = ((int)(short)(v >> 16) * spu.iLeftXAVol) >> 15;
    SSumLR[ns++] += l;
    SSumLR[ns++] += r;
 
-   spuMem[cursor] = v;
-   spuMem[cursor + 0x400/2] = v >> 16;
+   spu.spuMem[cursor] = v;
+   spu.spuMem[cursor + 0x400/2] = v >> 16;
    cursor = (cursor + 1) & 0x1ff;
   }
 }
@@ -108,9 +90,15 @@ INLINE void MixXA(void)
 
 static unsigned long timeGetTime_spu()
 {
+#if defined(NO_OS)
+ return 0;
+#elif defined(_WIN32)
+ return GetTickCount();
+#else
  struct timeval tv;
  gettimeofday(&tv, 0);                                 // well, maybe there are better ways
  return tv.tv_sec * 1000 + tv.tv_usec/1000;            // to do that, but at least it works
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -121,10 +109,10 @@ INLINE void FeedXA(xa_decode_t *xap)
 {
  int sinc,spos,i,iSize,iPlace,vl,vr;
 
- if(!bSPUIsOpen) return;
+ if(!spu.bSPUIsOpen) return;
 
- xapGlobal = xap;                                      // store info for save states
- XARepeat  = 100;                                      // set up repeat
+ spu.xapGlobal = xap;                                  // store info for save states
+ spu.XARepeat  = 100;                                  // set up repeat
 
 #if 0//def XA_HACK
  iSize=((45500*xap->nsamples)/xap->freq);              // get size
@@ -133,13 +121,13 @@ INLINE void FeedXA(xa_decode_t *xap)
 #endif
  if(!iSize) return;                                    // none? bye
 
- if(XAFeed<XAPlay) iPlace=XAPlay-XAFeed;               // how much space in my buf?
- else              iPlace=(XAEnd-XAFeed) + (XAPlay-XAStart);
+ if(spu.XAFeed<spu.XAPlay) iPlace=spu.XAPlay-spu.XAFeed; // how much space in my buf?
+ else              iPlace=(spu.XAEnd-spu.XAFeed) + (spu.XAPlay-spu.XAStart);
 
  if(iPlace==0) return;                                 // no place at all
 
  //----------------------------------------------------//
- if(iXAPitch)                                          // pitch change option?
+ if(spu_config.iXAPitch)                               // pitch change option?
   {
    static DWORD dwLT=0;
    static DWORD dwFPS=0;
@@ -185,12 +173,12 @@ INLINE void FeedXA(xa_decode_t *xap)
    uint32_t * pS=(uint32_t *)xap->pcm;
    uint32_t l=0;
 
-   if(iXAPitch)
+   if(spu_config.iXAPitch)
     {
      int32_t l1,l2;short s;
      for(i=0;i<iSize;i++)
       {
-       if(iUseInterpolation==2) 
+       if(spu_config.iUseInterpolation==2)
         {
          while(spos>=0x10000L)
           {
@@ -231,12 +219,12 @@ INLINE void FeedXA(xa_decode_t *xap)
        ssat32_to_16(l2);
        l=(l1&0xffff)|(l2<<16);
 
-       *XAFeed++=l;
+       *spu.XAFeed++=l;
 
-       if(XAFeed==XAEnd) XAFeed=XAStart;
-       if(XAFeed==XAPlay) 
+       if(spu.XAFeed==spu.XAEnd) spu.XAFeed=spu.XAStart;
+       if(spu.XAFeed==spu.XAPlay)
         {
-         if(XAPlay!=XAStart) XAFeed=XAPlay-1;
+         if(spu.XAPlay!=spu.XAStart) spu.XAFeed=spu.XAPlay-1;
          break;
         }
 
@@ -247,7 +235,7 @@ INLINE void FeedXA(xa_decode_t *xap)
     {
      for(i=0;i<iSize;i++)
       {
-       if(iUseInterpolation==2) 
+       if(spu_config.iUseInterpolation==2)
         {
          while(spos>=0x10000L)
           {
@@ -278,12 +266,12 @@ INLINE void FeedXA(xa_decode_t *xap)
           }
         }
 
-       *XAFeed++=l;
+       *spu.XAFeed++=l;
 
-       if(XAFeed==XAEnd) XAFeed=XAStart;
-       if(XAFeed==XAPlay) 
+       if(spu.XAFeed==spu.XAEnd) spu.XAFeed=spu.XAStart;
+       if(spu.XAFeed==spu.XAPlay)
         {
-         if(XAPlay!=XAStart) XAFeed=XAPlay-1;
+         if(spu.XAPlay!=spu.XAStart) spu.XAFeed=spu.XAPlay-1;
          break;
         }
 
@@ -296,12 +284,12 @@ INLINE void FeedXA(xa_decode_t *xap)
    unsigned short * pS=(unsigned short *)xap->pcm;
    uint32_t l;short s=0;
 
-   if(iXAPitch)
+   if(spu_config.iXAPitch)
     {
      int32_t l1;
      for(i=0;i<iSize;i++)
       {
-       if(iUseInterpolation==2) 
+       if(spu_config.iUseInterpolation==2)
         {
          while(spos>=0x10000L)
           {
@@ -330,12 +318,12 @@ INLINE void FeedXA(xa_decode_t *xap)
        l1=(l1*iPlace)/iSize;
        ssat32_to_16(l1);
        l=(l1&0xffff)|(l1<<16);
-       *XAFeed++=l;
+       *spu.XAFeed++=l;
 
-       if(XAFeed==XAEnd) XAFeed=XAStart;
-       if(XAFeed==XAPlay) 
+       if(spu.XAFeed==spu.XAEnd) spu.XAFeed=spu.XAStart;
+       if(spu.XAFeed==spu.XAPlay)
         {
-         if(XAPlay!=XAStart) XAFeed=XAPlay-1;
+         if(spu.XAPlay!=spu.XAStart) spu.XAFeed=spu.XAPlay-1;
          break;
         }
 
@@ -346,7 +334,7 @@ INLINE void FeedXA(xa_decode_t *xap)
     {
      for(i=0;i<iSize;i++)
       {
-       if(iUseInterpolation==2) 
+       if(spu_config.iUseInterpolation==2)
         {
          while(spos>=0x10000L)
           {
@@ -372,12 +360,12 @@ INLINE void FeedXA(xa_decode_t *xap)
         }
 
        l &= 0xffff;
-       *XAFeed++=(l|(l<<16));
+       *spu.XAFeed++=(l|(l<<16));
 
-       if(XAFeed==XAEnd) XAFeed=XAStart;
-       if(XAFeed==XAPlay) 
+       if(spu.XAFeed==spu.XAEnd) spu.XAFeed=spu.XAStart;
+       if(spu.XAFeed==spu.XAPlay)
         {
-         if(XAPlay!=XAStart) XAFeed=XAPlay-1;
+         if(spu.XAPlay!=spu.XAStart) spu.XAFeed=spu.XAPlay-1;
          break;
         }
 
@@ -394,21 +382,21 @@ INLINE void FeedXA(xa_decode_t *xap)
 INLINE int FeedCDDA(unsigned char *pcm, int nBytes)
 {
  int space;
- space=(CDDAPlay-CDDAFeed-1)*4 & (CDDA_BUFFER_SIZE - 1);
+ space=(spu.CDDAPlay-spu.CDDAFeed-1)*4 & (CDDA_BUFFER_SIZE - 1);
  if(space<nBytes)
   return 0x7761; // rearmed_wait
 
  while(nBytes>0)
   {
-   if(CDDAFeed==CDDAEnd) CDDAFeed=CDDAStart;
-   space=(CDDAPlay-CDDAFeed-1)*4 & (CDDA_BUFFER_SIZE - 1);
-   if(CDDAFeed+space/4>CDDAEnd)
-    space=(CDDAEnd-CDDAFeed)*4;
+   if(spu.CDDAFeed==spu.CDDAEnd) spu.CDDAFeed=spu.CDDAStart;
+   space=(spu.CDDAPlay-spu.CDDAFeed-1)*4 & (CDDA_BUFFER_SIZE - 1);
+   if(spu.CDDAFeed+space/4>spu.CDDAEnd)
+    space=(spu.CDDAEnd-spu.CDDAFeed)*4;
    if(space>nBytes)
     space=nBytes;
 
-   memcpy(CDDAFeed,pcm,space);
-   CDDAFeed+=space/4;
+   memcpy(spu.CDDAFeed,pcm,space);
+   spu.CDDAFeed+=space/4;
    nBytes-=space;
    pcm+=space;
   }

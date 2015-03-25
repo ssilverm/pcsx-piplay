@@ -16,6 +16,7 @@
  ***************************************************************************/
 
 #include <stdio.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -33,6 +34,9 @@
 
 #define OSS_SPEED_44100     44100
 
+#define FRAGMENT_SHIFT 12
+#define FRAGMENT_SIZE  (1 << FRAGMENT_SHIFT)
+
 static int oss_audio_fd = -1;
 extern int errno;
 
@@ -45,7 +49,6 @@ static int oss_init(void)
  int pspeed=44100;
  int pstereo;
  int format;
- int fragsize = 0;
  int myfrag;
  int oss_speed, oss_stereo;
 
@@ -68,8 +71,7 @@ static int oss_init(void)
  // we use 64 fragments with 1024 bytes each
  // rearmed: now using 10*4096 for better latency
 
- fragsize=12;
- myfrag=(10<<16)|fragsize;
+ myfrag = (10<<16) | FRAGMENT_SHIFT;
 
  if(ioctl(oss_audio_fd,SNDCTL_DSP_SETFRAGMENT,&myfrag)==-1)
   {
@@ -153,7 +155,27 @@ static int oss_busy(void)
 
 static void oss_feed(void *buf, int bytes)
 {
+ audio_buf_info info;
+ char sbuf[4096];
+
  if(oss_audio_fd == -1) return;
+ if(ioctl(oss_audio_fd,SNDCTL_DSP_GETOSPACE,&info)==0)
+  {
+   // for fast forward
+   if(bytes > info.fragments * FRAGMENT_SIZE)
+    bytes = info.fragments * FRAGMENT_SIZE;
+   if(bytes == 0)
+    return;
+
+   if(info.fragments==info.fragstotal)
+    {
+     memset(sbuf, 0, sizeof(sbuf));
+     write(oss_audio_fd, sbuf, sizeof(sbuf));
+     write(oss_audio_fd, sbuf, sizeof(sbuf));
+     write(oss_audio_fd, sbuf, sizeof(sbuf));
+    }
+  }
+
  write(oss_audio_fd, buf, bytes);
 }
 

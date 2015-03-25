@@ -1,5 +1,5 @@
 /*
- * (C) Gražvydas "notaz" Ignotas, 2010-2013
+ * (C) Gražvydas "notaz" Ignotas, 2010-2015
  *
  * This work is licensed under the terms of any of these licenses
  * (at your option):
@@ -37,6 +37,7 @@
 #include "../libpcsxcore/cheat.h"
 #include "../libpcsxcore/new_dynarec/new_dynarec.h"
 #include "../plugins/dfinput/externals.h"
+#include "../plugins/dfsound/spu_config.h"
 #include "psemu_plugin_defs.h"
 #include "revision.h"
 
@@ -74,6 +75,7 @@ typedef enum
 	MA_OPT_SAVECFG,
 	MA_OPT_SAVECFG_GAME,
 	MA_OPT_CPU_CLOCKS,
+	MA_OPT_SPU_THREAD,
 	MA_OPT_DISP_OPTS,
 	MA_OPT_VARSCALER,
 	MA_OPT_VARSCALER_C,
@@ -82,6 +84,8 @@ typedef enum
 	MA_OPT_SWFILTER,
 	MA_OPT_GAMMA,
 	MA_OPT_VOUT_MODE,
+	MA_OPT_SCANLINES,
+	MA_OPT_SCANLINE_LEVEL,
 } menu_id;
 
 static int last_vout_w, last_vout_h, last_vout_bpp;
@@ -89,8 +93,10 @@ static int cpu_clock, cpu_clock_st, volume_boost, frameskip;
 static char last_selected_fname[MAXPATHLEN];
 static int config_save_counter, region, in_type_sel1, in_type_sel2;
 static int psx_clock;
-static int memcard1_sel, memcard2_sel;
+static int memcard1_sel = -1, memcard2_sel = -1;
+extern int g_autostateld_opt;
 int g_opts, g_scaler, g_gamma = 100;
+int scanlines, scanline_level = 20;
 int soft_scaling, analog_deadzone; // for Caanoo
 int soft_filter;
 
@@ -101,12 +107,6 @@ int soft_filter;
 #define DEFAULT_PSX_CLOCK 50
 #define DEFAULT_PSX_CLOCK_S "50"
 #endif
-
-// sound plugin
-extern int iUseReverb;
-extern int iUseInterpolation;
-extern int iXAPitch;
-extern int iVolume;
 
 static const char *bioses[24];
 static const char *gpu_plugins[16];
@@ -214,6 +214,9 @@ static int optional_cdimg_filter(struct dirent **namelist, int count,
 	struct stat64 statf;
 	FILE *f;
 
+	if (count <= 1)
+		return count;
+
 	for (i = 1; i < count; i++) {
 		if (namelist[i] == NULL || namelist[i]->d_type == DT_DIR)
 			continue;
@@ -318,7 +321,7 @@ static void menu_sync_config(void)
 		allow_abs_only_old = in_evdev_allow_abs_only;
 	}
 
-	iVolume = 768 + 128 * volume_boost;
+	spu_config.iVolume = 768 + 128 * volume_boost;
 	pl_rearmed_cbs.frameskip = frameskip - 1;
 	pl_timing_prepare(Config.PsxType);
 }
@@ -335,6 +338,8 @@ static void menu_set_defconfig(void)
 	analog_deadzone = 50;
 	soft_scaling = 1;
 	soft_filter = 0;
+	scanlines = 0;
+	scanline_level = 20;
 	plat_target.vout_fullscreen = 0;
 	psx_clock = DEFAULT_PSX_CLOCK;
 
@@ -393,13 +398,15 @@ static const struct {
 	CE_CONFIG_VAL(VSyncWA),
 	CE_CONFIG_VAL(Cpu),
 	CE_INTVAL(region),
-	CE_INTVAL_V(g_scaler, 2),
+	CE_INTVAL_V(g_scaler, 3),
 	CE_INTVAL(g_gamma),
 	CE_INTVAL(g_layer_x),
 	CE_INTVAL(g_layer_y),
 	CE_INTVAL(g_layer_w),
 	CE_INTVAL(g_layer_h),
 	CE_INTVAL(soft_filter),
+	CE_INTVAL(scanlines),
+	CE_INTVAL(scanline_level),
 	CE_INTVAL(plat_target.vout_method),
 	CE_INTVAL(plat_target.hwfilter),
 	CE_INTVAL(plat_target.vout_fullscreen),
@@ -409,6 +416,9 @@ static const struct {
 	CE_INTVAL(in_type_sel1),
 	CE_INTVAL(in_type_sel2),
 	CE_INTVAL(analog_deadzone),
+	CE_INTVAL(memcard1_sel),
+	CE_INTVAL(memcard2_sel),
+	CE_INTVAL(g_autostateld_opt),
 	CE_INTVAL_N("adev0_is_nublike", in_adev_is_nublike[0]),
 	CE_INTVAL_N("adev1_is_nublike", in_adev_is_nublike[1]),
 	CE_INTVAL_V(frameskip, 3),
@@ -431,9 +441,11 @@ static const struct {
 	CE_INTVAL_P(gpu_peopsgl.iVRamSize),
 	CE_INTVAL_P(gpu_peopsgl.iTexGarbageCollection),
 	CE_INTVAL_P(gpu_peopsgl.dwActFixes),
-	CE_INTVAL_V(iUseReverb, 3),
-	CE_INTVAL_V(iXAPitch, 3),
-	CE_INTVAL_V(iUseInterpolation, 3),
+	CE_INTVAL(spu_config.iUseReverb),
+	CE_INTVAL(spu_config.iXAPitch),
+	CE_INTVAL(spu_config.iUseInterpolation),
+	CE_INTVAL(spu_config.iTempo),
+	CE_INTVAL(spu_config.iUseThread),
 	CE_INTVAL(config_save_counter),
 	CE_INTVAL(in_evdev_allow_abs_only),
 	CE_INTVAL(volume_boost),
@@ -664,6 +676,29 @@ fail:
 	for (i = spu_plugsel = 0; spu_plugins[i] != NULL; i++)
 		if (strcmp(Config.Spu, spu_plugins[i]) == 0)
 			{ spu_plugsel = i; break; }
+
+	// memcard selections
+	char mcd1_old[sizeof(Config.Mcd1)];
+	char mcd2_old[sizeof(Config.Mcd2)];
+	strcpy(mcd1_old, Config.Mcd1);
+	strcpy(mcd2_old, Config.Mcd2);
+
+	if ((unsigned int)memcard1_sel < ARRAY_SIZE(memcards)) {
+		if (memcard1_sel == 0)
+			strcpy(Config.Mcd1, "none");
+		else if (memcards[memcard1_sel] != NULL)
+			snprintf(Config.Mcd1, sizeof(Config.Mcd1), ".%s%s",
+				MEMCARD_DIR, memcards[memcard1_sel]);
+	}
+	if ((unsigned int)memcard2_sel < ARRAY_SIZE(memcards)) {
+		if (memcard2_sel == 0)
+			strcpy(Config.Mcd2, "none");
+		else if (memcards[memcard2_sel] != NULL)
+			snprintf(Config.Mcd2, sizeof(Config.Mcd2), ".%s%s",
+				MEMCARD_DIR, memcards[memcard2_sel]);
+	}
+	if (strcmp(mcd1_old, Config.Mcd1) || strcmp(mcd2_old, Config.Mcd2))
+		LoadMcds(Config.Mcd1, Config.Mcd2);
 
 	return ret;
 }
@@ -1195,17 +1230,22 @@ static int menu_loop_keyconfig(int id, int keys)
 
 // ------------ gfx options menu ------------
 
-static const char *men_scaler[] = { "1x1", "scaled 4:3", "integer scaled 4:3", "fullscreen", "custom", NULL };
+static const char *men_scaler[] = {
+	"1x1", "integer scaled 2x", "scaled 4:3", "integer scaled 4:3", "fullscreen", "custom", NULL
+};
 static const char *men_soft_filter[] = { "None",
 #ifdef __ARM_NEON__
 	"scale2x", "eagle2x",
 #endif
 	NULL };
 static const char *men_dummy[] = { NULL };
+static const char h_scaler[]    = "int. 2x  - scales w. or h. 2x if it fits on screen\n"
+				  "int. 4:3 - uses integer if possible, else fractional";
 static const char h_cscaler[]   = "Displays the scaler layer, you can resize it\n"
 				  "using d-pad or move it using R+d-pad";
 static const char h_overlay[]   = "Overlay provides hardware accelerated scaling";
 static const char h_soft_filter[] = "Works only if game uses low resolution modes";
+static const char h_scanline_l[]  = "Scanline brightness, 0-100%";
 static const char h_gamma[]     = "Gamma/brightness adjustment (default 100)";
 
 static int menu_loop_cscaler(int id, int keys)
@@ -1262,11 +1302,15 @@ static int menu_loop_cscaler(int id, int keys)
 
 static menu_entry e_menu_gfx_options[] =
 {
-	mee_enum      ("Scaler",                   MA_OPT_VARSCALER, g_scaler, men_scaler),
+	mee_enum_h    ("Scaler",                   MA_OPT_VARSCALER, g_scaler, men_scaler, h_scaler),
 	mee_enum      ("Video output mode",        MA_OPT_VOUT_MODE, plat_target.vout_method, men_dummy),
 	mee_onoff     ("Software Scaling",         MA_OPT_SCALER2, soft_scaling, 1),
 	mee_enum      ("Hardware Filter",          MA_OPT_HWFILTER, plat_target.hwfilter, men_dummy),
 	mee_enum_h    ("Software Filter",          MA_OPT_SWFILTER, soft_filter, men_soft_filter, h_soft_filter),
+#ifdef __ARM_NEON__
+	mee_onoff     ("Scanlines",                MA_OPT_SCANLINES, scanlines, 1),
+	mee_range_h   ("Scanline brightness",      MA_OPT_SCANLINE_LEVEL, scanline_level, 0, 100, h_scanline_l),
+#endif
 	mee_range_h   ("Gamma adjustment",         MA_OPT_GAMMA, g_gamma, 1, 200, h_gamma),
 //	mee_onoff     ("Vsync",                    0, vsync, 1),
 	mee_cust_h    ("Setup custom scaler",      MA_OPT_VARSCALER_C, menu_loop_cscaler, NULL, h_cscaler),
@@ -1400,13 +1444,16 @@ static int menu_loop_plugin_gpu_peopsgl(int id, int keys)
 
 static const char *men_spu_interp[] = { "None", "Simple", "Gaussian", "Cubic", NULL };
 static const char h_spu_volboost[]  = "Large values cause distortion";
+static const char h_spu_tempo[]     = "Slows down audio if emu is too slow\n"
+				      "This is inaccurate and breaks games";
 
 static menu_entry e_menu_plugin_spu[] =
 {
 	mee_range_h   ("Volume boost",              0, volume_boost, -5, 30, h_spu_volboost),
-	mee_onoff     ("Reverb",                    0, iUseReverb, 2),
-	mee_enum      ("Interpolation",             0, iUseInterpolation, men_spu_interp),
-	mee_onoff     ("Adjust XA pitch",           0, iXAPitch, 1),
+	mee_onoff     ("Reverb",                    0, spu_config.iUseReverb, 1),
+	mee_enum      ("Interpolation",             0, spu_config.iUseInterpolation, men_spu_interp),
+	mee_onoff     ("Adjust XA pitch",           0, spu_config.iXAPitch, 1),
+	mee_onoff_h   ("Adjust tempo",              0, spu_config.iTempo, 1, h_spu_tempo),
 	mee_end,
 };
 
@@ -1559,6 +1606,11 @@ static menu_entry e_menu_options[] =
 	mee_onoff     ("Show FPS",                 0, g_opts, OPT_SHOWFPS),
 	mee_enum      ("Region",                   0, region, men_region),
 	mee_range     ("CPU clock",                MA_OPT_CPU_CLOCKS, cpu_clock, 20, 5000),
+#ifdef C64X_DSP
+	mee_onoff     ("Use C64x DSP for sound",   MA_OPT_SPU_THREAD, spu_config.iUseThread, 1),
+#else
+	mee_onoff     ("Threaded SPU",             MA_OPT_SPU_THREAD, spu_config.iUseThread, 1),
+#endif
 	mee_handler_id("[Display]",                MA_OPT_DISP_OPTS, menu_loop_gfx_options),
 	mee_handler   ("[BIOS/Plugins]",           menu_loop_plugin_options),
 	mee_handler   ("[Advanced]",               menu_loop_adv_options),
@@ -1571,10 +1623,9 @@ static menu_entry e_menu_options[] =
 static int menu_loop_options(int id, int keys)
 {
 	static int sel = 0;
-	int i;
 
-	i = me_id2offset(e_menu_options, MA_OPT_CPU_CLOCKS);
-	e_menu_options[i].enabled = cpu_clock_st > 0 ? 1 : 0;
+	me_enable(e_menu_options, MA_OPT_CPU_CLOCKS, cpu_clock_st > 0);
+	me_enable(e_menu_options, MA_OPT_SPU_THREAD, spu_config.iThreadAvail);
 	me_enable(e_menu_options, MA_OPT_SAVECFG_GAME, ready_to_go && CdromId[0]);
 
 	me_loop(e_menu_options, &sel);
@@ -1883,7 +1934,7 @@ static const char credits_text[] =
 	"PCSX4ALL plugin by PCSX4ALL team\n"
 	"  Chui, Franxis, Unai\n\n"
 	"integration, optimization and\n"
-	"  frontend (C) 2010-2012 notaz\n";
+	"  frontend (C) 2010-2015 notaz\n";
 
 static int reset_game(void)
 {
@@ -1964,6 +2015,8 @@ static int run_exe(void)
 
 static int run_cd_image(const char *fname)
 {
+	int autoload_state = g_autostateld_opt;
+
 	ready_to_go = 0;
 	reload_plugins(fname);
 
@@ -1988,6 +2041,28 @@ static int run_cd_image(const char *fname)
 
 	emu_on_new_cd(1);
 	ready_to_go = 1;
+
+	if (autoload_state) {
+		unsigned int newest = 0;
+		int time, slot, newest_slot = -1;
+
+		for (slot = 0; slot < 10; slot++) {
+			if (emu_check_save_file(slot, &time)) {
+				if ((unsigned int)time > newest) {
+					newest = time;
+					newest_slot = slot;
+				}
+			}
+		}
+
+		if (newest_slot >= 0) {
+			lprintf("autoload slot %d\n", newest_slot);
+			emu_load_state(newest_slot);
+		}
+		else {
+			lprintf("no save to autoload.\n");
+		}
+	}
 
 	return 0;
 }

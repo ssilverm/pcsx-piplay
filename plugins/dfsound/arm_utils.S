@@ -14,8 +14,6 @@
 .data
 .align 2
 ptr_ChanBuf:   .word ESYM(ChanBuf)
-ptr_SSumLR:    .word ESYM(SSumLR)
-ptr_sRVBStart: .word ESYM(sRVBStart)
 #endif
 
 .text
@@ -37,14 +35,11 @@ ptr_sRVBStart: .word ESYM(sRVBStart)
 
 #ifdef __ARM_NEON__
 
-FUNCTION(mix_chan): @ (int start, int count, int lv, int rv)
+FUNCTION(mix_chan): @ (int *SSumLR, int count, int lv, int rv)
     vmov.32     d14[0], r2
     vmov.32     d14[1], r3             @ multipliers
-    mov         r12, r0
+    mov         r2, r0
     load_varadr r0, ChanBuf
-    load_varadr r2, SSumLR
-    add         r0, r12, lsl #2
-    add         r2, r12, lsl #3
 0:
     vldmia      r0!, {d0-d1}
     vldmia      r2, {d2-d5}
@@ -70,17 +65,12 @@ mc_finish:
     bx          lr
 
 
-FUNCTION(mix_chan_rvb): @ (int start, int count, int lv, int rv)
+FUNCTION(mix_chan_rvb): @ (int *SSumLR, int count, int lv, int rv, int *rvb)
     vmov.32     d14[0], r2
     vmov.32     d14[1], r3             @ multipliers
-    mov         r12, r0
+    mov         r2, r0
     load_varadr r0, ChanBuf
-    load_varadr r3, sRVBStart
-    load_varadr r2, SSumLR
-    ldr         r3, [r3]
-    add         r0, r12, lsl #2
-    add         r2, r12, lsl #3
-    add         r3, r12, lsl #3
+    ldr         r3, [sp]               @ rvb
 0:
     vldmia      r0!, {d0-d1}
     vldmia      r2, {d2-d5}
@@ -114,15 +104,12 @@ mcr_finish:
 
 #elif defined(HAVE_ARMV5)
 
-FUNCTION(mix_chan): @ (int start, int count, int lv, int rv)
+FUNCTION(mix_chan): @ (int *SSumLR, int count, int lv, int rv)
     stmfd       sp!, {r4-r8,lr}
     orr         r3, r2, r3, lsl #16
     lsl         r3, #1                 @ packed multipliers << 1
-    mov         r12, r0
+    mov         r2, r0
     load_varadr r0, ChanBuf
-    load_varadr r2, SSumLR
-    add         r0, r12, lsl #2
-    add         r2, r12, lsl #3
 0:
     ldmia       r0!, {r4,r5}
     ldmia       r2, {r6-r8,lr}
@@ -143,17 +130,13 @@ mc_finish:
     ldmfd       sp!, {r4-r8,pc}
 
 
-FUNCTION(mix_chan_rvb): @ (int start, int count, int lv, int rv)
+FUNCTION(mix_chan_rvb): @ (int *SSumLR, int count, int lv, int rv, int *rvb)
     stmfd       sp!, {r4-r8,lr}
     orr         lr, r2, r3, lsl #16
     lsl         lr, #1
-    load_varadr r3, sRVBStart
-    load_varadr r2, SSumLR
-    load_varadr r4, ChanBuf
-    ldr         r3, [r3]
-    add         r2, r2, r0, lsl #3
-    add         r3, r3, r0, lsl #3
-    add         r0, r4, r0, lsl #2
+    mov         r2, r0
+    load_varadr r0, ChanBuf
+    ldr         r3, [sp, #6*4]         @ rvb
 0:
     ldr         r4, [r0], #4
     ldmia       r2, {r6,r7}

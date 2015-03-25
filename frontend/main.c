@@ -8,12 +8,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include <dlfcn.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 #include "main.h"
 #include "plugin.h"
@@ -25,6 +25,7 @@
 #include "../libpcsxcore/cheat.h"
 #include "../libpcsxcore/new_dynarec/new_dynarec.h"
 #include "../plugins/cdrcimg/cdrcimg.h"
+#include "../plugins/dfsound/spu_config.h"
 #include "revision.h"
 
 #ifndef NO_FRONTEND
@@ -43,12 +44,6 @@ static void check_memcards(void);
 // don't include debug.h - it breaks ARM build (R1 redefined)
 void StartDebugger();
 void StopDebugger();
-
-// sound plugin
-extern int iUseReverb;
-extern int iUseInterpolation;
-extern int iXAPitch;
-extern int iVolume;
 
 int ready_to_go, g_emu_want_quit, g_emu_resetting;
 unsigned long gpuDisp;
@@ -141,13 +136,16 @@ void emu_set_default_config(void)
 	pl_rearmed_cbs.gpu_peopsgl.iVRamSize = 64;
 	pl_rearmed_cbs.gpu_peopsgl.iTexGarbageCollection = 1;
 
-	iUseReverb = 2;
-	iUseInterpolation = 1;
-	iXAPitch = 0;
-	iVolume = 768;
-#ifndef __ARM_ARCH_7A__ /* XXX */
-	iUseReverb = 0;
-	iUseInterpolation = 0;
+	spu_config.iUseReverb = 1;
+	spu_config.iUseInterpolation = 1;
+	spu_config.iXAPitch = 0;
+	spu_config.iVolume = 768;
+	spu_config.iTempo = 0;
+	spu_config.iUseThread = 1; // no effect if only 1 core is detected
+#if defined(__arm__) && !defined(__ARM_ARCH_7A__) /* XXX GPH hack */
+	spu_config.iUseReverb = 0;
+	spu_config.iUseInterpolation = 0;
+	spu_config.iTempo = 1;
 #endif
 	new_dynarec_hacks = 0;
 	cycle_multiplier = 200;
@@ -251,7 +249,11 @@ do_state_slot:
 		}
 	case SACTION_VOLUME_UP:
 	case SACTION_VOLUME_DOWN:
-		plat_target_step_volume(emu_action == SACTION_VOLUME_UP);
+		{
+			static int volume;
+			plat_target_step_volume(&volume,
+				emu_action == SACTION_VOLUME_UP ? 1 : -1);
+		}
 		return;
 	case SACTION_MINIMIZE:
 		if (GPU_close != NULL)
@@ -451,6 +453,10 @@ void emu_core_ask_exit(void)
 }
 
 #ifndef NO_FRONTEND
+
+#include <sys/stat.h>
+#include <sys/types.h>
+
 static void create_profile_dir(const char *directory) {
 	char path[MAXPATHLEN];
 
@@ -765,7 +771,7 @@ int emu_save_state(int slot)
 		return ret;
 
 	ret = SaveState(fname);
-#ifndef __ARM_ARCH_7A__ /* XXX */
+#if defined(__arm__) && !defined(__ARM_ARCH_7A__) /* XXX GPH hack */
 	sync();
 #endif
 	SysPrintf("* %s \"%s\" [%d]\n",
@@ -849,6 +855,7 @@ static int _OpenPlugins(void) {
 	ret = SPU_open();
 	if (ret < 0) { SysMessage(_("Error opening SPU plugin!")); return -1; }
 	SPU_registerCallback(SPUirq);
+	SPU_registerScheduleCb(SPUschedule);
 	// pcsx-rearmed: we handle gpu elsewhere
 	//ret = GPU_open(&gpuDisp, "PCSX", NULL);
 	//if (ret < 0) { SysMessage(_("Error opening GPU plugin!")); return -1; }
@@ -966,7 +973,7 @@ static const int builtin_plugin_ids[] = {
 
 void *SysLoadLibrary(const char *lib) {
 	const char *tmp = strrchr(lib, '/');
-	void *ret;
+	void *ret = NULL;
 	int i;
 
 	SysPrintf("plugin: %s\n", lib);
@@ -978,9 +985,14 @@ void *SysLoadLibrary(const char *lib) {
 				return (void *)(long)(PLUGIN_DL_BASE + builtin_plugin_ids[i]);
 	}
 
+#ifndef _WIN32
 	ret = dlopen(lib, RTLD_NOW);
 	if (ret == NULL)
 		SysMessage("dlopen: %s", dlerror());
+#else
+	/* no external plugin support, abi is no longer
+	 * compatible with psemu/pcsx anyway */
+#endif
 	return ret;
 }
 
@@ -990,11 +1002,19 @@ void *SysLoadSym(void *lib, const char *sym) {
 	if (PLUGIN_DL_BASE <= plugid && plugid < PLUGIN_DL_BASE + ARRAY_SIZE(builtin_plugins))
 		return plugin_link(plugid - PLUGIN_DL_BASE, sym);
 
+#ifndef _WIN32
 	return dlsym(lib, sym);
+#else
+	return NULL;
+#endif
 }
 
 const char *SysLibError() {
+#ifndef _WIN32
 	return dlerror();
+#else
+	return "not supported";
+#endif
 }
 
 void SysCloseLibrary(void *lib) {
@@ -1003,6 +1023,8 @@ void SysCloseLibrary(void *lib) {
 	if (PLUGIN_DL_BASE <= plugid && plugid < PLUGIN_DL_BASE + ARRAY_SIZE(builtin_plugins))
 		return;
 
+#ifndef _WIN32
 	dlclose(lib);
+#endif
 }
 
